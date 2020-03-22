@@ -6,13 +6,21 @@ import Map from './map/Map'
 import Management from './components/Management'
 import Sidebar from './components/Sidebar'
 
+import { remote } from 'electron'
+
 const App = (props) => {
   const { classes } = props
   const appProps = { ...props, ...{ id: 'map' } }
 
   const [showManagement, setManagement] = React.useState(false)
+  const [currentProjectPath, setCurrentProjectPath] = React.useState(undefined)
 
-  const toggleManagementUI = event => {
+  React.useEffect(() => {
+    const currentProjectPath = remote.getCurrentWindow().path
+    setCurrentProjectPath(currentProjectPath)
+  }, [])
+
+  const toggleManagementUI = () => {
     setManagement(showManagement => !showManagement)
   }
 
@@ -20,7 +28,7 @@ const App = (props) => {
     return (
       <React.Fragment>
         <Sidebar clickAction={toggleManagementUI}/>
-        <Management />
+        <Management currentProjectPath={currentProjectPath}/>
       </React.Fragment>
     )
   }
