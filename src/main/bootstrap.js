@@ -15,6 +15,11 @@ const windowKey = id => `${WINDOWS_KEY}.${id}`
 const RECENT_WINDOW_KEY = `${STATE_KEY}.recentWindow`
 
 /**
+ * an indicator if the application will quit if the user closes the primary (last) window
+ */
+let appShallQuit = true
+
+/**
  * Merge current value (object) with supplied (map) function.
  */
 const merge = keyPath => (fn, defaultvalue) => settings.set(keyPath, fn(settings.get(keyPath, defaultvalue)))
@@ -72,34 +77,20 @@ const createProjectWindow = async (options) => {
     window.viewport = projectOptions.viewport
     window.once('ready-to-show', () => {
       window.show()
-      /* create a screenshot and save the image that will be used as a preview */
-      /*
-        TODO: choose a more appropriate point in time to create the screenshot
-        if we close the window within the 5s this will throw an error
-      */
-      setTimeout(async () => {
-        try {
-          const nativeImage = await window.webContents.capturePage()
-          projects.writePreview(projectOptions.path, nativeImage.toJPEG(75))
-        } catch (error) {
-          console.dir(error)
-        }
-      }, 5000)
-
       /*  Remember this window/project to be the most recent.
           We will use this key to identify the recent project and
           use it on startup ('app-ready') and when we switch projects ('IPC_SWITCH_PROJECT').
       */
       merge(RECENT_WINDOW_KEY)(() => projectOptions.path)
     })
-    /*
-      TODO: decide if the app should quit if we close the window
-    */
-    // window.once('close', deleteWindow)
+
     window.on('page-title-updated', event => event.preventDefault())
     window.on('move', updateBounds)
     window.on('resize', updateBounds)
     // TODO: support fullscreen
+
+    /* (re)establish electron's normal "quit the app if no more windows are open" behavior */
+    appShallQuit = true
 
     window.loadURL(windowUrl)
   }
@@ -136,15 +127,36 @@ const bootstrap = () => {
     createProjectWindow(recentProject)
   })
 
+  app.on('window-all-closed', () => {
+    if (appShallQuit) app.quit()
+  })
+
   ipcMain.on('IPC_VIEWPORT_CHANGED', (event, viewport) => {
     const id = projectId(event.sender.getOwnerBrowserWindow().path)
     merge(windowKey(id))(props => ({ ...props, viewport }), {})
+  })
+
+  /*  Emitted by the renderer process in order to save a preview
+      image of the map. This image is used in the project management view. */
+  ipcMain.on('IPC_CREATE_PREVIEW', async (event, projectPath) => {
+    const sender = event.sender.getOwnerBrowserWindow()
+    try {
+      const nativeImage = await sender.webContents.capturePage()
+      projects.writePreview(projectPath, nativeImage.toJPEG(75))
+    } catch (error) {
+      console.dir(error)
+    }
   })
 
   /* emitted by the renderer process in order to change projects */
   ipcMain.on('IPC_SWITCH_PROJECT', (event, projectPath) => {
     const sender = event.sender.getOwnerBrowserWindow()
     if (sender.path === projectPath) return
+    /*
+      prevent electron from quitting the application
+      this will be restored to TRUE in the createProjectWindow function
+    */
+    appShallQuit = false
     sender.close()
     /*
       restore the window settings

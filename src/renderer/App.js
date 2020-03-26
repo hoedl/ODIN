@@ -6,6 +6,7 @@ import Map from './map/Map'
 import Management from './components/Management'
 
 import { ipcRenderer, remote } from 'electron'
+import evented from './evented'
 
 const App = (props) => {
   const { classes } = props
@@ -23,6 +24,25 @@ const App = (props) => {
     ipcRenderer.on('IPC_SHOW_PROJECT_MANAGEMENT', toggleManagementUI)
     return () => { ipcRenderer.removeListener(toggleManagementUI) }
   }, [])
+
+  React.useEffect(() => {
+    if (!showManagement && currentProjectPath) {
+      /*  When a project gets renamed the window title is set accordingly.
+          Since we use the current window for reading the project path
+          we can also do so for the project name.
+      */
+      const projectName = remote.getCurrentWindow().getTitle()
+      evented.emit('OSD_MESSAGE', { message: projectName, slot: 'A1' })
+      /*
+        loading map tiles and features takes some time, so we
+        create the preview of the map after 1s
+      */
+      const appLoadedTimer = setTimeout(() => {
+        ipcRenderer.send('IPC_CREATE_PREVIEW', currentProjectPath)
+      }, 1000)
+      return () => clearTimeout(appLoadedTimer)
+    }
+  }, [showManagement, currentProjectPath])
 
   const toggleManagementUI = () => {
     setManagement(showManagement => !showManagement)
