@@ -3,6 +3,10 @@ import url from 'url'
 import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import settings from 'electron-settings'
 import projects from '../shared/projects'
+import { exportProject, importProject } from './ipc/share-project'
+import handleCreatePreview from './ipc/create-preview'
+
+import packageJSON from '../../package.json'
 
 /**
  * Facade for application windows/project state.
@@ -65,16 +69,27 @@ const createProjectWindow = async (options) => {
       }
     })
 
+    /** the path property is required to identify the project */
+    window.path = projectOptions.path
+
     /* remember the window settings per project, so the key is the project folder name (which is a UUID) */
     const id = projectId(projectOptions.path)
     const key = windowKey(id)
     merge(key)(props => ({ ...props, ...projectOptions }), {})
 
     const updateBounds = () => merge(key)(props => ({ ...props, ...window.getBounds() }))
+    window.on('page-title-updated', event => event.preventDefault())
+    window.on('move', updateBounds)
+    window.on('resize', updateBounds)
+    // TODO: support fullscreen
 
-    /** the path property is required to identify the project */
-    window.path = projectOptions.path
-    window.viewport = projectOptions.viewport
+    /* restore the existing viewport if exists or maximize the window */
+    if (projectOptions.viewport) {
+      window.viewport = projectOptions.viewport
+    } else {
+      window.maximize()
+    }
+
     window.once('ready-to-show', () => {
       window.show()
       /*  Remember this window/project to be the most recent.
@@ -84,14 +99,10 @@ const createProjectWindow = async (options) => {
       merge(RECENT_WINDOW_KEY)(() => projectOptions.path)
     })
 
-    window.on('page-title-updated', event => event.preventDefault())
-    window.on('move', updateBounds)
-    window.on('resize', updateBounds)
-    // TODO: support fullscreen
-
     /* (re)establish electron's normal "quit the app if no more windows are open" behavior */
     appShallQuit = true
-
+    /* allow users to find their recently used projects access by data/time */
+    projects.mergeMetadata(projectOptions.path, { lastAccess: new Date() })
     window.loadURL(windowUrl)
   }
 
@@ -113,6 +124,11 @@ const createProjectWindow = async (options) => {
 const bootstrap = () => {
   // app.on('before-quit', () => (shuttingDown = true))
   app.on('ready', () => {
+    /*
+      Setting the appId is required to allow desktop notifications on the Windows platform.
+    */
+    app.setAppUserModelId(packageJSON.build.appId)
+
     /* try to restore persisted window state */
     const state = Object.values(settings.get(WINDOWS_KEY, {}))
 
@@ -136,18 +152,6 @@ const bootstrap = () => {
     merge(windowKey(id))(props => ({ ...props, viewport }), {})
   })
 
-  /*  Emitted by the renderer process in order to save a preview
-      image of the map. This image is used in the project management view. */
-  ipcMain.on('IPC_CREATE_PREVIEW', async (event, projectPath) => {
-    const sender = event.sender.getOwnerBrowserWindow()
-    try {
-      const nativeImage = await sender.webContents.capturePage()
-      projects.writePreview(projectPath, nativeImage.toJPEG(75))
-    } catch (error) {
-      console.dir(error)
-    }
-  })
-
   /* emitted by the renderer process in order to change projects */
   ipcMain.on('IPC_SWITCH_PROJECT', (event, projectPath) => {
     const sender = event.sender.getOwnerBrowserWindow()
@@ -166,6 +170,17 @@ const bootstrap = () => {
     const persistedSettings = settings.get(windowKey(id), { path: projectPath })
     createProjectWindow(persistedSettings)
   })
+
+  /*
+    Emitted by the renderer process in order to save a preview
+    image of the map. This image is used in the project management view.
+  */
+  ipcMain.on('IPC_CREATE_PREVIEW', handleCreatePreview)
+
+  /* emitted by renderer/components/Management.js */
+  ipcMain.on('IPC_EXPORT_PROJECT', exportProject)
+  ipcMain.on('IPC_IMPORT_PROJECT', importProject)
+
 }
 
 export default bootstrap

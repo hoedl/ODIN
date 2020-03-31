@@ -12,6 +12,7 @@ import BackToMapIcon from '@material-ui/icons/ExitToApp'
 
 import { ipcRenderer, remote } from 'electron'
 import projects from '../../shared/projects'
+import { fromISO } from '../../shared/militaryTime'
 
 
 const useStyles = makeStyles(theme => ({
@@ -25,7 +26,14 @@ const useStyles = makeStyles(theme => ({
     gridTemplateColumns: '1fr 2fr',
     gridTemplateRows: 'auto',
     gridGap: '1em',
-    gridTemplateAreas: '"projects details"'
+    gridTemplateAreas: '"projects details"',
+    '@media (max-width:1024px)': {
+      gridTemplateColumns: '1fr',
+      gridTemplateRows: 'auto auto',
+      gridTemplateAreas: `
+      "projects"
+      "details"`
+    }
   },
 
   sidebar: {
@@ -90,12 +98,20 @@ const Management = props => {
   /* reloadProject forces the enumerateProjects to re-run */
   const [reloadProjects, setReloadProjects] = React.useState(true)
 
+  const byName = (one, other) => {
+    if (one.metadata.lastAccess < other.metadata.lastAccess) return -1
+    if (one.metadata.lastAccess > other.metadata.lastAccess) return 1
+    return 0
+  }
+
 
   React.useEffect(() => {
     projects.enumerateProjects().then(allProjects => {
       /* read all metadata */
       Promise.all(
         allProjects.map(projectPath => projects.readMetadata(projectPath)))
+        .then(projects => projects.sort(byName))
+        .then(projects => projects.reverse())
         .then(augmentedProjects => {
           setReloadProjects(false)
           setCurrentProjects(augmentedProjects)
@@ -104,6 +120,14 @@ const Management = props => {
         })
     })
   }, [reloadProjects])
+
+  React.useEffect(() => {
+    const reloadProjects = () => setReloadProjects(true)
+
+    /* emitted by share-projects.js after a projects has been imported */
+    ipcRenderer.on('IPC_PROJECT_IMPORTED', reloadProjects)
+    return () => ipcRenderer.removeListener('IPC_PROJECT_IMPORTED', reloadProjects)
+  }, [])
 
   const setFocusAndLoadPreview = project => {
     setFocusedProject(project)
@@ -130,6 +154,11 @@ const Management = props => {
 
   const handleNewProject = () => {
     projects.createProject().then((_) => {
+      /*
+        An undefined focused project will select the first
+        project in the list. See the useEffect hook above.
+      */
+      setFocusAndLoadPreview(undefined)
       setReloadProjects(true)
     })
   }
@@ -151,6 +180,19 @@ const Management = props => {
     projects.writeMetadata(focusedProject.path, metadata).then(() => {
       setReloadProjects(true)
     })
+  }
+
+  /**
+   *
+   * @param {*} projectPath the absolute filesystem path of the project
+   */
+  const handleExportProject = projectPath => {
+    ipcRenderer.send('IPC_EXPORT_PROJECT', projectPath)
+  }
+
+  /* see the useEffect hook above how the asynchronous reply is handeled */
+  const handleImportProject = () => {
+    ipcRenderer.send('IPC_IMPORT_PROJECT')
   }
 
   /* sub components */
@@ -208,8 +250,9 @@ const Management = props => {
           />
         </FormControl>
         <Button aria-label="export" variant="outlined" color="primary"
-          style={{ float: 'right', margin: '2px' }} disabled={true}
-          startIcon={<ExportIcon />}>
+          style={{ float: 'right', margin: '2px' }} startIcon={<ExportIcon />}
+          onClick={() => handleExportProject(project.path) }
+        >
           Export
         </Button>
         <Button id="saveProject" aria-label="save" variant="contained" color="primary"
@@ -261,7 +304,7 @@ const Management = props => {
     const { projects } = props
     const items = projects.map(project => (
       <ListItem alignItems="flex-start" key={project.path} button onClick={ () => handleProjectFocus(project) }>
-        <ListItemText primary={project.metadata.name}/>
+        <ListItemText primary={project.metadata.name} secondary={`last access ${fromISO(project.metadata.lastAccess)}`}/>
         <Button id={'switchTo' + project.metadata.name} color="primary" variant="outlined" disabled={currentProjectPath === project.path}
           onClick={ () => handleProjectSelected(project)} startIcon={<PlayCircleOutlineIcon />} >
           Switch to
@@ -285,7 +328,8 @@ const Management = props => {
         <div className={classes.projects}>
           <div style={{ marginBottom: '3em' }}>
             <Button id="importProject" variant="outlined" color="primary" style={{ float: 'right', marginRight: '1em', marginLeft: '2px' }}
-              startIcon={<ImportProjectIcon />} disabled={true}
+              startIcon={<ImportProjectIcon />}
+              onClick={ event => handleImportProject() }
             >
             Import
             </Button>
@@ -295,7 +339,7 @@ const Management = props => {
             New
             </Button>
           </div>
-          <List><Projects projects={currentProjects}/></List>
+          <List id="projectList"><Projects projects={currentProjects}/></List>
         </div>
         <div className={classes.details}>
           <Details project={focusedProject}/>

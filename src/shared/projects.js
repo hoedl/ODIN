@@ -1,5 +1,7 @@
 import path from 'path'
 import fs from 'fs'
+import archiver from 'archiver'
+import StreamZip from 'node-stream-zip'
 import uuid from 'uuid-random'
 
 /*  since this module is shared and may be uses both in the main and in the
@@ -13,9 +15,10 @@ const ODIN_PROJECTS = path.join(ODIN_HOME, 'projects')
 const ODIN_LAYERS = 'layers'
 const ODIN_METADATA = 'metadata.json'
 const ODIN_PREVIEW = 'preview.jpg'
-const ODIN_DEFAULT_METADATA = {
-  name: 'untitled project'
-}
+const ODIN_DEFAULT_METADATA = () => ({
+  name: 'untitled project',
+  lastAccess: new Date()
+})
 
 const exists = projectPath => fs.existsSync(projectPath)
 
@@ -24,7 +27,7 @@ const createProject = async (name = uuid()) => {
   if (exists(projectPath)) return
   /* create subfolder structure, too */
   await fs.promises.mkdir(path.join(projectPath, ODIN_LAYERS), { recursive: true })
-  await fs.promises.writeFile(path.join(projectPath, ODIN_METADATA), JSON.stringify(ODIN_DEFAULT_METADATA))
+  await fs.promises.writeFile(path.join(projectPath, ODIN_METADATA), JSON.stringify(ODIN_DEFAULT_METADATA()))
   return projectPath
 }
 
@@ -36,6 +39,32 @@ const deleteProject = async (projectPath) => {
   } catch (error) {
     console.dir(error)
   }
+}
+
+const exportProject = async (projectPath, targetFilePath) => {
+  if (!exists(projectPath)) return
+  const output = fs.createWriteStream(targetFilePath)
+  const odinArchive = archiver('zip', { zlib: { level: 7 } })
+  odinArchive.on('error', error => {
+    throw error
+  })
+  odinArchive.pipe(output)
+  odinArchive.directory(projectPath, path.basename(projectPath))
+  return odinArchive.finalize().then(() => odinArchive.removeAllListeners())
+}
+
+const importProject = async (sourceFilePath) => {
+  if (!exists(sourceFilePath)) return
+  return new Promise((resolve, reject) => {
+    const zip = new StreamZip({ file: sourceFilePath })
+    zip.on('ready', () => {
+      zip.extract(null, ODIN_PROJECTS, (error, count) => {
+        zip.close()
+        if (error) return reject(error)
+        return resolve(count)
+      })
+    })
+  })
 }
 
 const enumerateProjects = async () => {
@@ -75,6 +104,14 @@ const writeMetadata = async (projectPath, metadata) => {
   }
 }
 
+const mergeMetadata = async (projectPath, kv) => {
+  const { metadata } = await readMetadata(projectPath)
+  if (!metadata) return
+
+  const newMetadata = { ...metadata, ...kv }
+  await writeMetadata(projectPath, newMetadata)
+}
+
 const readPreview = async (projectPath, options = { encoding: 'base64' }) => {
   if (!exists(projectPath)) {
     console.error(`project path does not exist ${projectPath}`)
@@ -103,9 +140,12 @@ export default {
   exists,
   createProject,
   deleteProject,
+  exportProject,
+  importProject,
   enumerateProjects,
   readMetadata,
   writeMetadata,
+  mergeMetadata,
   readPreview,
   writePreview
 }
