@@ -5,8 +5,7 @@ import settings from 'electron-settings'
 import projects from '../shared/projects'
 import { exportProject, importProject } from './ipc/share-project'
 import handleCreatePreview from './ipc/create-preview'
-
-import packageJSON from '../../package.json'
+import i18n from '../i18n'
 
 /**
  * Facade for application windows/project state.
@@ -39,6 +38,10 @@ const projectId = projectPath => path.basename(projectPath)
 const windowTitle = async (projectPath) => {
   const data = await projects.readMetadata(projectPath)
   return data.metadata.name
+}
+
+const sendi18Info = (receiver, lng) => {
+  receiver.webContents.send('IPC_LANGUAGE_CHANGED', { lng: lng, resourceBundle: i18n.getResourceBundle(lng, 'web') })
 }
 
 /**
@@ -90,6 +93,13 @@ const createProjectWindow = async (options) => {
       window.maximize()
     }
 
+    /* send app setting for i18n to window */
+    const languageChangedHandler = lng => {
+      sendi18Info(window, lng)
+    }
+    i18n.on('languageChanged', languageChangedHandler)
+    window.on('close', () => i18n.off('languageChanged', languageChangedHandler))
+
     window.once('ready-to-show', () => {
       window.show()
       /*  Remember this window/project to be the most recent.
@@ -126,8 +136,9 @@ const bootstrap = () => {
   app.on('ready', () => {
     /*
       Setting the appId is required to allow desktop notifications on the Windows platform.
+      Please make sure this value is THE SAME as in 'electron-builder.yml'.
     */
-    app.setAppUserModelId(packageJSON.build.appId)
+    app.setAppUserModelId('io.syncpoint.odin')
 
     /* try to restore persisted window state */
     const state = Object.values(settings.get(WINDOWS_KEY, {}))
@@ -180,6 +191,12 @@ const bootstrap = () => {
   /* emitted by renderer/components/Management.js */
   ipcMain.on('IPC_EXPORT_PROJECT', exportProject)
   ipcMain.on('IPC_IMPORT_PROJECT', importProject)
+
+  /* emitted by renderer/App */
+  ipcMain.on('IPC_APP_RENDERING_COMPLETED', event => {
+    const sender = event.sender.getOwnerBrowserWindow()
+    sendi18Info(sender, i18n.language)
+  })
 
 }
 
