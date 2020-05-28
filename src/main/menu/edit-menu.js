@@ -25,23 +25,16 @@ const menu = i18n => {
       },
       { type: 'separator' },
       {
-        role: 'cut', label: i18n.t('edit.cut')
+        role: 'cut',
+        label: i18n.t('edit.cut')
       },
       {
-        role: 'copy', label: i18n.t('edit.copy')
+        role: 'copy',
+        label: i18n.t('edit.copy')
       },
       {
-        role: 'paste', label: i18n.t('edit.paste')
-      },
-      {
-        role: 'pasteandmatchstyle', label: i18n.t('edit.pasteAndMatchStyle')
-      },
-      {
-        label: i18n.t('edit.delete'),
-        click: onclick(browserWindow => {
-          browserWindow.webContents.delete()
-          browserWindow.send('IPC_EDIT_DELETE')
-        })
+        role: 'paste',
+        label: i18n.t('edit.paste')
       },
       {
         label: i18n.t('edit.selectAll'),

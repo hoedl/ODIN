@@ -1,47 +1,65 @@
-import React from 'react'
+import React, { Suspense } from 'react'
 import { makeStyles } from '@material-ui/core/styles'
+import 'typeface-roboto'
+
+import './i18n'
+import './ipc'
+import evented from './evented'
 import OSD from './components/OSD'
 import Map from './map/Map'
-import Management from './components/Management'
+import ProjectManagement from './components/ProjectManagement'
+import BasemapManagement from './components/BasemapManagement'
+import Activities from './components/Activities'
+import PropertyPanel from './components/properties/PropertyPanel'
 
 import { ipcRenderer, remote } from 'electron'
-import evented from './evented'
-import './i18n'
+
 
 const useStyles = makeStyles((/* theme */) => ({
   overlay: {
+    pointerEvents: 'none',
     position: 'fixed',
-    top: '1em',
-    left: '1em',
-    bottom: '1.5em',
-    right: '1em',
+    top: '0.5em',
+    left: '0.5em',
+    bottom: '5em',
+    right: '0.5em',
     zIndex: 20,
     display: 'grid',
     gridTemplateColumns: 'auto',
     gridTemplateRows: '5em auto',
-    gridGap: '1em',
-    pointerEvents: 'none'
+    gridGap: '1em'
   },
 
   contentPanel: {
     gridRowStart: 2,
     gridColumnStart: 1,
     display: 'grid',
-    gridTemplateColumns: '25em auto 25em',
-    gridTemplateRows: '1fr 3fr',
-    gridGap: '1em',
+
+    // Activity Bar width: 40px = 24px icon + 2 x 8px padding
+    gridTemplateColumns: '48px 20em auto 26em',
+    gridGap: '0.5em',
+
+    // A: activity bar (buttons to show specific tool panel),
+    // L: left/tools panel (tools, palette, layers, ORBAT, etc.)
+    // R: right/properties panel (properties)
     gridTemplateAreas: `
-      "L . R"
-      "L B R"
+      "A L . R"
     `
+  },
+
+  propertiesPanel: {
+    gridArea: 'R',
+    pointerEvents: 'auto'
   }
 }))
+
+
 
 const App = (props) => {
   const classes = useStyles()
   const mapProps = { ...props, id: 'map' }
 
-  const [showManagement, setManagement] = React.useState(false)
+  const [showManagement, setManagement] = React.useState(null)
   const [currentProjectPath, setCurrentProjectPath] = React.useState(undefined)
 
   React.useEffect(() => {
@@ -49,7 +67,8 @@ const App = (props) => {
 
     /*  Tell the main process that React has finished rendering of the App */
     setTimeout(() => ipcRenderer.send('IPC_APP_RENDERING_COMPLETED'), 0)
-    ipcRenderer.on('IPC_SHOW_PROJECT_MANAGEMENT', () => setManagement(true))
+    ipcRenderer.on('IPC_SHOW_PROJECT_MANAGEMENT', () => setManagement('PROJECT_MANAGEMENT'))
+    ipcRenderer.on('IPC_SHOW_BASEMAP_MANAGEMENT', () => setManagement('BASEMAP_MANAGEMENT'))
 
     /*
       Normally we need to return a cleanup function in order to remove listeners. Since
@@ -82,20 +101,38 @@ const App = (props) => {
     return () => clearTimeout(appLoadedTimer)
   }, [showManagement, currentProjectPath])
 
-  const management = () => <Management
+  const projectManagement = () => <ProjectManagement
     currentProjectPath={currentProjectPath}
-    onCloseClicked={() => setManagement(false)}
+    onCloseClicked={() => setManagement(null)}
   />
 
-  const map = () => <>
-    <Map { ...mapProps }/>
-    <div className={classes.overlay}>
-      <OSD />
-    </div>
-  </>
+  const basemapManagement = () => <BasemapManagement
+    onCloseClicked={() => setManagement(null)}
+  />
 
-  // Either show project management or map:
-  return showManagement ? management() : map()
+  const currentManagementTool = () => {
+    if (!showManagement) return null
+    switch (showManagement) {
+      case 'PROJECT_MANAGEMENT': return projectManagement()
+      case 'BASEMAP_MANAGEMENT': return basemapManagement()
+    }
+  }
+
+  return (
+    <>
+      <Map { ...mapProps }/>
+      <div className={classes.overlay}>
+        <OSD />
+        <div className={classes.contentPanel}>
+          <Suspense fallback={<div>loading...</div>}>
+            <Activities/>
+          </Suspense>
+          <PropertyPanel/>
+        </div>
+      </div>
+      { currentManagementTool() }
+    </>
+  )
 }
 
 export default App

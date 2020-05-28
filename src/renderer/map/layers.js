@@ -1,21 +1,18 @@
-import fs from 'fs'
-import uuid from 'uuid-random'
-import { ipcRenderer } from 'electron'
-import Mousetrap from 'mousetrap'
+import * as R from 'ramda'
 
 import Collection from 'ol/Collection'
 import { Vector as VectorSource } from 'ol/source'
 import { Vector as VectorLayer } from 'ol/layer'
-import { GeoJSON } from 'ol/format'
-import Feature from 'ol/Feature'
-import { fromLonLat } from 'ol/proj'
+import * as ol from 'ol'
 import { Select, Modify, Translate, DragBox } from 'ol/interaction'
 import { click, primaryAction, platformModifierKeyOnly } from 'ol/events/condition'
+import Style from 'ol/style/Style'
 
-import { noop, uniq, K } from '../../shared/combinators'
+import { noop, K } from '../../shared/combinators'
 import style from './style/style'
-import project from '../project'
-import undo from '../undo'
+import inputLayers from '../project/input-layers'
+import Feature from '../project/Feature'
+import URI from '../project/URI'
 import selection from '../selection'
 
 
@@ -23,19 +20,11 @@ import selection from '../selection'
 // SECTION: Module-global (utility) functions.
 
 /**
- * collectionArray :: (ol/Collection<a> | [a]) -> [a]
- */
-const collectionArray = iterable =>
-  iterable instanceof Collection
-    ? iterable.getArray()
-    : iterable
-
-/**
  * geometryType :: (ol/Feature | ol/geom/Geometry) -> string
  * Map feature or feature geometry to rendered layer type.
  */
 const geometryType = object => {
-  const type = object instanceof Feature
+  const type = object instanceof ol.Feature
     ? object.getGeometry().getType()
     : object.getType()
 
@@ -49,30 +38,15 @@ const geometryType = object => {
 
 /**
  * cloneGeometries :: ol/Collection<ol/Feature> -> (string ~> ol/Geometry)
- * Map feature collection to cloned featue geometries identified by feature ids.
+ * Map features to cloned featue geometries identified by feature ids.
  */
 const cloneGeometries = features =>
-  collectionArray(features)
-    .map(feature => [feature.getId(), feature.getGeometry().clone()])
+  features
+    .map(feature => [Feature.id(feature), Feature.cloneGeometry(feature)])
     .reduce((acc, [id, geometry]) => K(acc)(acc => (acc[id] = geometry)), {})
 
-/**
- * layerUri :: (ol/Feature | string) -> string
- * Map feature id (from feature or feature URI) to URI of containing layer.
- */
-const layerUri = featureOrUri => {
-  const id = (featureOrUri instanceof Feature)
-    ? featureOrUri.getId()
-    : featureOrUri
-
-  const layerId = id.match(/feature:(.*)\/.*/)[1]
-  return `layer:${layerId}`
-}
-
-/**
- * featureId :: ol/Feature -> string
- */
-const featureId = feature => feature.getId()
+const hideFeature = feature => feature.setStyle(new Style(null))
+const unhideFeature = feature => feature.setStyle(null)
 
 // --
 // SECTION: Geometry-specific vector sources and layers.
@@ -85,7 +59,7 @@ let layers = {}
 
 /**
  * selectionLayer :: ol/layer/Vector
- * Layer for currently selected features.
+ * Layer for currently selected features (used for highlighting).
  */
 let selectionLayer
 
@@ -104,6 +78,10 @@ const sources = () => [
   selectionSource
 ]
 
+const layerFeatures = layerId => sources()
+  .reduce((acc, source) => acc.concat(source.getFeatures()), [])
+  .filter(Feature.hasLayerId(layerId))
+
 /**
  * geometrySource :: (ol/Feature | ol/geom/Geometry) -> ol/source/Vector
  * Source for given feature or feature geometry.
@@ -121,92 +99,30 @@ const featureById = id => {
   return lookup(sources())
 }
 
-const featuresById = ids => ids.map(featureById)
-
-
-// --
-// SECTION: Input layers as feature collections.
-
 /**
- * featureCollections :: string ~> [ol/Collection<ol/Feature>]
- * Feature collections per input layer with layer URI as key.
+ * featuresById :: [string] -> [ol/Feature]
+ * NOTE: Undefined entries are filtered from result.
  */
-let featureCollections = {}
+const featuresById = ids =>
+  ids
+    .map(featureById)
+    .filter(x => x)
 
-const addFeatureCollection = ([layerUri, features]) => {
-  featureCollections[layerUri] = features
-
-  // Add features to corresponding source and
-  // propagate feature collection updates to sources.
-
-  features.forEach(feature => geometrySource(feature).addFeature(feature))
-  features.on('add', ({ element }) => geometrySource(element).addFeature(element))
-  features.on('remove', ({ element }) => geometrySource(element).removeFeature(element))
+const addFeature = feature => {
+  if (Feature.hidden(feature)) feature.setStyle(new Style(null))
+  geometrySource(feature).addFeature(feature)
 }
 
-/**
- * writeFeatureCollection :: string -> unit
- * Write originating input feature collection back to fs.
- */
-const writeFeatureCollection = layerUri => {
-  const features = featureCollections[layerUri]
+const removeFeature = feature => {
+  const source = selection.isSelected(Feature.id(feature))
+    ? selectionSource
+    : geometrySource(feature)
 
-  // Filter internal feature properties.
-  // Feature id is excluded from clone by default.
-  const clones = features.getArray().map(feature => {
-    const clone = feature.clone()
-    clone.unset('selected')
-    return clone
-  })
-
-  const filename = features.get('filename')
-  fs.writeFileSync(filename, geoJSON.writeFeatures(clones))
+  source.removeFeature(feature)
 }
-
-/**
- * writeFeatures :: (ol/Collection<ol/Feature> | [ol/Feature] | [string]) -> unit
- * Write underlying collections for features to fs.
- */
-const writeFeatures = featuresOrUris =>
-  collectionArray(featuresOrUris)
-    .map(layerUri)
-    .filter(uniq)
-    .forEach(writeFeatureCollection)
-
-const pushFeature = feature => featureCollections[layerUri(feature)].push(feature)
-const removeFeature = feature => featureCollections[layerUri(feature)].remove(feature)
-
 
 // --
 // SECTION: Setup layers from project.
-
-/**
- * GeoJSON, by definitions, comes in WGS84.
- */
-const geoJSON = new GeoJSON({
-  dataProjection: 'EPSG:4326', // WGS84
-  featureProjection: 'EPSG:3857' // Web-Mercator
-})
-
-
-/**
- * loadFeatures :: string -> Promise(ol/Collection)
- * Load input layers as feature collection.
- */
-const loadFeatures = async filename => {
-  const layerId = uuid()
-  const contents = await fs.promises.readFile(filename, 'utf8')
-
-  // Use mutable ol/Collection to write current layer snapshot to file.
-  const features = new Collection(geoJSON.readFeatures(contents))
-  features.set('filename', filename)
-
-  features.forEach(feature => {
-    feature.setId(`feature:${layerId}/${uuid()}`)
-  })
-
-  return [`layer:${layerId}`, features]
-}
 
 
 /**
@@ -225,7 +141,13 @@ const createLayers = () => {
   // Update layer opacity depending on selection.
 
   const updateOpacity = () => {
-    const hasSelection = selection.selected('feature:').length
+    const hasSelection = selection
+      .selected(URI.isFeatureId)
+      .map(featureById)
+      .filter(Feature.showing)
+      .filter(Feature.unlocked)
+      .length
+
     entries.forEach(([_, layer]) => layer.setOpacity(hasSelection ? 0.35 : 1))
   }
 
@@ -240,19 +162,30 @@ const createLayers = () => {
 // SECTION: Selection handling.
 // Manage collection of selected features and feature selection state.
 
-const selectedFeatures = new Collection()
+/**
+ * selectedFeatures :: ol/Collection<ol/Feature>
+ * NOTE: With unique options, collection throws when duplicate is added.
+ */
+const selectedFeatures = new Collection([], { unique: true })
 
 /**
  * select :: [ol/Feature] => unit
  * Update selection without updating collection.
  */
-const select = features => selection.select(features.map(featureId))
+const select = features => {
+  // Deselect others than feature:
+  const removals = selection.selected(uri => !URI.isFeatureId(uri))
+  selection.deselect(removals)
+  selection.select(features.map(Feature.id))
+}
+
 
 /**
  * deselect :: [Feature] => unit
  * Update selection without updating collection.
  */
-const deselect = features => selection.deselect(features.map(featureId))
+const deselect = features =>
+  selection.deselect(features.map(Feature.id))
 
 /**
  * addSelection :: [Feature] => unit
@@ -260,7 +193,18 @@ const deselect = features => selection.deselect(features.map(featureId))
  */
 const addSelection = features => {
   select(features)
-  features.forEach(selectedFeatures.push.bind(selectedFeatures))
+
+  features
+    .filter(feature => selectedFeatures.getArray().indexOf(feature) === -1)
+    .forEach(selectedFeatures.push.bind(selectedFeatures))
+}
+
+/**
+ * replaceSelection :: [ol/Feature] -> unit
+ */
+const replaceSelection = features => {
+  clearSelection()
+  addSelection(features)
 }
 
 /**
@@ -281,85 +225,44 @@ const clearSelection = () => {
   selectedFeatures.clear()
 }
 
+
 /**
  * Move selected features between feature layer and selection layer.
  */
 
 selection.on('selected', ids => {
-  featuresById(ids).forEach(feature => {
-    feature.set('selected', true)
-    geometrySource(feature).removeFeature(feature)
-    selectionSource.addFeature(feature)
-  })
+
+  // Move selected features to dedicated source/layer:
+  featuresById(ids)
+    .filter(Feature.showing)
+    .filter(Feature.unlocked)
+    .forEach(feature => {
+
+      // If triggered from the outside, chances are that
+      // the feature is not already contained in
+      // selected feature collection.
+      // NOTE: Respect uniqueness.
+
+      if (selectedFeatures.getArray().indexOf(feature) === -1) {
+        selectedFeatures.push(feature)
+      }
+
+      geometrySource(feature).removeFeature(feature)
+      selectionSource.addFeature(feature)
+    })
 })
 
-selection.on('deselected', ids => {
-  featuresById(ids).forEach(feature => {
-    feature.unset('selected')
-    feature.setStyle(null) // release cached style, if any
-    selectionSource.removeFeature(feature)
-    geometrySource(feature).addFeature(feature)
-  })
-})
+selection.on('deselected', ids => featuresById(ids)
+  .forEach(feature => {
+    selectedFeatures.remove(feature)
 
-
-// --
-// SECTION: Commands (with undo/redo support).
-
-/**
- * updateGeometryCommand
- *   :: (string ~> ol/Geometry) -> (string ~> ol/Geometry) -> command
- */
-const updateGeometryCommand = (initial, current) => ({
-  inverse: () => updateGeometryCommand(current, initial),
-  apply: () => {
-    const updateGeometry = ([feature, geometry]) => {
-      feature.setGeometry(geometry)
-      return feature
+    // Hidden features are not moved to selection source.
+    if (selectionSource.hasFeature(feature)) {
+      feature.setStyle(null) // release cached style, if any
+      selectionSource.removeFeature(feature)
+      geometrySource(feature).addFeature(feature)
     }
-
-    const features = Object.entries(initial)
-      .map(([id, geometry]) => [featureById(id), geometry])
-      .map(updateGeometry)
-
-    // Write features/layers back to disk:
-    writeFeatures(features)
-  }
-})
-
-/**
- * insertFeaturesCommand :: (string ~> ol/feature) -> command
- * Add given features to corresponding input layer collections.
- * NOTE: Input layers are identified by feature id (feature map keys).
- */
-const insertFeaturesCommand = features => ({
-  inverse: () => deleteFeaturesCommand(Object.keys(features)),
-  apply: () => {
-    const setFeatureId = ([id, feature]) => K(feature)(feature => feature.setId(id))
-    Object.entries(features).map(setFeatureId).forEach(pushFeature)
-    writeFeatures(Object.keys(features))
-  }
-})
-
-/**
- * deleteFeaturesCommand :: [string] -> command
- * Delete features with given ids.
- */
-const deleteFeaturesCommand = featureIds => {
-
-  // Collect state to revert command effect.
-  const putClone = feature => acc => (acc[feature.getId()] = feature.clone())
-  const clones = featuresById(featureIds)
-    .reduce((acc, feature) => K(acc)(putClone(feature)), {})
-
-  return {
-    inverse: () => insertFeaturesCommand(clones),
-    apply: () => {
-      featuresById(featureIds).forEach(removeFeature)
-      writeFeatures(featureIds)
-    }
-  }
-}
+  }))
 
 
 // --
@@ -374,15 +277,17 @@ const conjunction = (...ps) => v => ps.reduce((acc, p) => acc && p(v), true)
  * Select interaction.
  */
 const createSelect = () => {
-
   const interaction = new Select({
     hitTolerance,
+
+    // Operates on all layers including selection (necessary to detect toggles).
     layers: [...Object.values(layers), selectionLayer],
     features: selectedFeatures,
     style,
     condition: conjunction(click, noAltKey),
     toggleCondition: platformModifierKeyOnly, // macOS: command
-    multi: false // don't select all features under cursor at once.
+    multi: false, // don't select all features under cursor at once.
+    filter: Feature.unlocked
   })
 
   interaction.on('select', ({ selected, deselected }) => {
@@ -408,18 +313,21 @@ const createModify = () => {
   })
 
   interaction.on('modifystart', ({ features }) => {
-    initial = cloneGeometries(features)
+    initial = cloneGeometries(features.getArray())
   })
 
   interaction.on('modifyend', ({ features }) => {
-    const current = cloneGeometries(features)
-    const command = updateGeometryCommand(initial, current)
-    undo.push(command)
-    writeFeatures(features)
+    inputLayers.updateGeometries(initial, features.getArray())
   })
 
-  const activate = () =>
-    interaction.setActive(selection.selected('feature:').length === 1)
+  // Activate Modify interaction only for single-select:
+  const activate = () => {
+    const features = selection.selected(URI.isFeatureId)
+      .map(featureById)
+      .filter(Feature.showing)
+
+    interaction.setActive(features.length === 1)
+  }
 
   selection.on('selected', activate)
   selection.on('deselected', activate)
@@ -432,6 +340,9 @@ const createModify = () => {
  * Translate, i.e. move feature(s) interaction.
  */
 const createTranslate = () => {
+
+  // initial :: (string ~> ol/geom/Geometry)
+  // Feature geometries before translate operation.
   let initial = {}
 
   const interaction = new Translate({
@@ -440,14 +351,11 @@ const createTranslate = () => {
   })
 
   interaction.on('translatestart', ({ features }) => {
-    initial = cloneGeometries(features)
+    initial = cloneGeometries(features.getArray())
   })
 
   interaction.on('translateend', ({ features }) => {
-    const current = cloneGeometries(features)
-    const command = updateGeometryCommand(initial, current)
-    undo.push(command)
-    writeFeatures(features)
+    inputLayers.updateGeometries(initial, features.getArray())
   })
 
   return interaction
@@ -478,18 +386,14 @@ const createBoxSelect = () => {
     const extent = interaction.getGeometry().getExtent()
     sources().forEach(source => {
       source.forEachFeatureIntersectingExtent(extent, feature => {
-        features.push(feature)
+        if (Feature.showing(feature)) features.push(feature)
       })
     })
 
-    const [additions, removals] = features.reduce((acc, feature) => {
-      if (selection.isSelected(feature.getId())) acc[1].push(feature)
-      else acc[0].push(feature)
-      return acc
-    }, [[], []])
-
+    const isSelected = feature => selection.isSelected(Feature.id(feature))
+    const [removals, additions] = R.partition(isSelected)(features)
     removeSelection(removals)
-    addSelection(additions)
+    addSelection(additions.filter(Feature.unlocked))
   })
 
   return interaction
@@ -497,42 +401,41 @@ const createBoxSelect = () => {
 
 
 // --
-// SECTION: IPC/mousetrap hooks.
+// SECTION: Handle project/layer events.
 
-const deleteSelection = () => {
-  const featureIds = selection.selected('feature:')
-  clearSelection()
 
-  const command = deleteFeaturesCommand(featureIds)
-  command.apply()
-  undo.push(command.inverse())
+const eventHandlers = {
+  featuresadded: ({ features, selected }) => {
+    features.forEach(addFeature)
+    if (selected) replaceSelection(features)
+  },
+  featuresremoved: ({ ids }) => {
+    ids.map(featureById).forEach(removeFeature)
+  },
+  featurepropertiesupdated: ({ featureId, properties }) => {
+    const feature = featureById(featureId)
+    if (!feature) return
+
+    feature.setStyle(null)
+    feature.setProperties(properties)
+  },
+  layerhidden: ({ layerId, hidden }) => {
+    const toggle = hidden ? hideFeature : unhideFeature
+    sources()
+      .reduce((acc, source) => acc.concat(source.getFeatures()), [])
+      .filter(Feature.hasLayerId(layerId))
+      .forEach(toggle)
+  },
+  layerremoved: ({ layerId }) => {
+    layerFeatures(layerId).forEach(removeFeature)
+  },
+  layeradded: ({ _, features }) => {
+    features.forEach(addFeature)
+  }
 }
 
-ipcRenderer.on('IPC_EDIT_SELECT_ALL', () => {
-  clearSelection()
-  const features = sources().reduce((acc, source) => acc.concat(source.getFeatures()), [])
-  addSelection(features)
-})
-
-ipcRenderer.on('IPC_EDIT_DELETE', deleteSelection)
-Mousetrap.bind('del', deleteSelection) // macOS: fn+backspace
-Mousetrap.bind('command+backspace', deleteSelection)
-
-// --
-// SECTION: Handle project events.
-
-const projectOpened = async map => {
-
-  // Set viewport.
-  const { center, zoom } = project.preferences().viewport
-  map.setCenter(fromLonLat(center))
-  map.setZoom(zoom)
-
+export default map => {
   layers = createLayers()
-  const filenames = project.layerFiles()
-  const featureCollectionEntries = await Promise.all(filenames.map(loadFeatures))
-  featureCollectionEntries.forEach(addFeatureCollection)
-
   Object.values(layers).forEach(map.addLayer)
 
   // Selection source and layer.
@@ -543,20 +446,6 @@ const projectOpened = async map => {
   map.addInteraction(createTranslate())
   map.addInteraction(createModify())
   map.addInteraction(createBoxSelect())
-}
 
-const projectClosed = map => {
-  clearSelection()
-  undo.clear()
-  map.dispose()
-  layers = {}
-  featureCollections = {}
+  inputLayers.register(event => (eventHandlers[event.type] || noop)(event))
 }
-
-const projectEventHandlers = {
-  open: projectOpened,
-  close: projectClosed
-}
-
-export default map =>
-  project.register(event => (projectEventHandlers[event] || noop)(map))

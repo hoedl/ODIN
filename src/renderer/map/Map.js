@@ -6,15 +6,14 @@ import * as ol from 'ol'
 import 'ol/ol.css'
 import { fromLonLat, toLonLat } from 'ol/proj'
 import { ScaleLine } from 'ol/control'
-
+import getGridLayerGroup from './grids/group'
+import basemapLayerGroup from './basemap/group'
 
 import evented from '../evented'
-import project from '../project'
+import preferences from '../project/preferences'
 import coordinateFormat from '../../shared/coord-format'
 import layers from './layers'
-import basemap from './basemap'
 import './style/scalebar.css'
-import undo from '../undo'
 import disposable from '../../shared/disposable'
 
 const zoom = view => view.getZoom()
@@ -23,9 +22,8 @@ const center = view => toLonLat(view.getCenter())
 const viewportChanged = view => () => {
   const viewport = { zoom: zoom(view), center: center(view) }
   ipcRenderer.send('IPC_VIEWPORT_CHANGED', viewport)
-  project.updatePreferences({ viewport })
+  preferences.set('viewport', viewport)
 }
-
 
 
 /**
@@ -45,26 +43,22 @@ const effect = props => () => {
     text: true,
     minWidth: 140
   })
-
   const map = new ol.Map({
     view,
     target: id,
-    controls: [scaleLine]
+    controls: [scaleLine],
+    layers: [basemapLayerGroup(), getGridLayerGroup()]
   })
 
+  map.on('click', () => evented.emit('MAP_CLICKED'))
   map.on('moveend', viewportChanged(view))
   map.on('pointermove', event => {
     const lonLatCooridinate = toLonLat(event.coordinate)
     const currentCoordinate = coordinateFormat.format({ lng: lonLatCooridinate[0], lat: lonLatCooridinate[1] })
+
     // TODO: throttle?
     evented.emit('OSD_MESSAGE', { message: currentCoordinate, slot: 'C2' })
   })
-
-  /*
-    Handling the basemap layer is done using the basemap module.
-  */
-  basemap(map)
-
 
   // Provide layer/interaction cleanup.
   let disposables = disposable.of()
@@ -90,21 +84,16 @@ const effect = props => () => {
   layers({
     addLayer,
     addInteraction,
-    dispose,
-    setCenter: view.setCenter.bind(view),
-    setZoom: view.setZoom.bind(view),
-    rotation: view.getRotation.bind(view)
+    dispose
   })
-}
 
-const onFocus = () => {
-  ipcRenderer.on('IPC_EDIT_UNDO', undo.undo)
-  ipcRenderer.on('IPC_EDIT_REDO', undo.redo)
-}
-
-const onBlur = () => {
-  ipcRenderer.off('IPC_EDIT_UNDO', undo.undo)
-  ipcRenderer.off('IPC_EDIT_REDO', undo.redo)
+  // Set viewport and basemap from preferences.
+  preferences.register(({ type, preferences }) => {
+    if (type !== 'preferences') return
+    const { center, zoom } = preferences.viewport
+    view.setCenter(fromLonLat(center))
+    view.setZoom(zoom)
+  })
 }
 
 /**
@@ -116,8 +105,6 @@ const Map = props => {
   return <div
     id={props.id}
     tabIndex="0"
-    onFocus={ onFocus }
-    onBlur={ onBlur }
   />
 }
 
