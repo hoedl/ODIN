@@ -2,10 +2,11 @@ import * as R from 'ramda'
 import { Style, Icon } from 'ol/style'
 import ms from 'milsymbol'
 import { K } from '../../../shared/combinators'
-import defaultStyle from './style-default'
 import selection from '../../selection'
-
-
+import defaultStyle from './default-style'
+import { polygonStyle } from './polygon-style'
+import { lineStyle } from './line-style'
+import { featureGeometry } from '../../components/feature-descriptors'
 
 /**
  * normalizeSIDC :: String -> String
@@ -83,25 +84,32 @@ const symbolStyle = (feature, resolution) => {
 }
 
 
+const geometryType = feature => {
+  const type = feature.getGeometry().getType()
+
+  /* eslint-disable camelcase */
+  switch (type) {
+    case 'LineString': {
+      const specificType = featureGeometry(feature.get('sidc'))
+      switch (specificType) {
+        case 'line-2pt': return 'Line'
+        default: return type
+      }
+    }
+    default: return type
+  }
+}
 
 /**
  * FEATURE STYLE FUNCTION.
  */
 
-const geometryType = feature => {
-  const type = feature.getGeometry().getType()
-
-  /* eslint-disable camelcase */
-  const { corridor_area_width_dim } = feature.getProperties()
-  switch (type) {
-    case 'LineString': return corridor_area_width_dim ? 'Corridor' : type
-    default: return type
-  }
-}
-
 export default (feature, resolution) => {
   const provider = R.cond([
     [R.equals('Point'), R.always(symbolStyle)],
+    [R.equals('Polygon'), R.always(polygonStyle)],
+    [R.equals('Line'), R.always(lineStyle)],
+    [R.equals('LineString'), R.always(lineStyle)],
     [R.T, R.always(defaultStyle)]
   ])
 
@@ -110,10 +118,8 @@ export default (feature, resolution) => {
   const style = provider(type)(feature, resolution)
   const selected = selection.isSelected(feature.getId())
   const hidden = feature.get('hidden')
-
-  if (!selected && !hidden) {
-    feature.setStyle(style)
-  }
+  const cacheDisabled = ['Line'].includes(type)
+  if (!cacheDisabled && !selected && !hidden) feature.setStyle(style)
 
   return style
 }

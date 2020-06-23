@@ -14,6 +14,7 @@ import inputLayers from '../project/input-layers'
 import Feature from '../project/Feature'
 import URI from '../project/URI'
 import selection from '../selection'
+import { featureGeometry } from '../components/feature-descriptors'
 
 
 // --
@@ -309,7 +310,15 @@ const createModify = () => {
     hitTolerance,
     features: selectedFeatures,
     // Allow translate while editing (with shift key pressed):
-    condition: conjunction(primaryAction, noShiftKey)
+    condition: conjunction(primaryAction, noShiftKey),
+    insertVertexCondition: () => {
+      const [geometry] = selection.selected(URI.isFeatureId)
+        .map(featureById)
+        .map(feature => feature.get('sidc'))
+        .map(sidc => featureGeometry(sidc))
+
+      return !['line-2pt'].includes(geometry)
+    }
   })
 
   interaction.on('modifystart', ({ features }) => {
@@ -405,6 +414,9 @@ const createBoxSelect = () => {
 
 
 const eventHandlers = {
+  snapshot: ({ features }) => {
+    features.forEach(addFeature)
+  },
   featuresadded: ({ features, selected }) => {
     features.forEach(addFeature)
     if (selected) replaceSelection(features)
@@ -429,23 +441,26 @@ const eventHandlers = {
   layerremoved: ({ layerId }) => {
     layerFeatures(layerId).forEach(removeFeature)
   },
-  layeradded: ({ _, features }) => {
+  layeradded: ({ features }) => {
     features.forEach(addFeature)
   }
 }
 
 export default map => {
+  const addLayer = map.addLayer.bind(map)
+  const addInteraction = map.addInteraction.bind(map)
+
   layers = createLayers()
-  Object.values(layers).forEach(map.addLayer)
+  Object.values(layers).forEach(addLayer)
 
   // Selection source and layer.
   selectionLayer = new VectorLayer({ style, source: selectionSource })
-  map.addLayer(selectionLayer)
+  addLayer(selectionLayer)
 
-  map.addInteraction(createSelect())
-  map.addInteraction(createTranslate())
-  map.addInteraction(createModify())
-  map.addInteraction(createBoxSelect())
+  addInteraction(createSelect())
+  addInteraction(createTranslate())
+  addInteraction(createModify())
+  addInteraction(createBoxSelect())
 
   inputLayers.register(event => (eventHandlers[event.type] || noop)(event))
 }

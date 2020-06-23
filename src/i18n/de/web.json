@@ -46,7 +46,8 @@
       "redo": "Wiederherstellen",
       "cut": "Ausschneiden",
       "copy": "Kopieren",
-      "paste": "Einfügen"
+      "paste": "Einfügen",
+      "share": "Teilen (PNG)"
     }
   },
   "layers": {
@@ -57,5 +58,15 @@
   },
   "basemaps": {
     "opacity": "Deckkraft"
+  },
+  "palette": {
+    "presets": {
+      "installation": "Installation",
+      "hostility": "Hostility: Friendly, Hostile, Neutral, Unknown",
+      "status": "Status: Present, Anticipated/Planned"
+    },
+    "search": {
+      "placeholder": "Suche nach unit, radar, missile, ..."
+    }
   }
 }
